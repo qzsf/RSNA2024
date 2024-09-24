@@ -1,0 +1,324 @@
+Overview
+train.csv: Contains the severity labels for each condition and spinal level for every study.
+train_label_coordinates.csv: Provides the specific images (series_id and instance_number) and coordinates (x, y) where each condition is observed within a study.
+Our goal is to:
+Understand and preprocess the labels from train.csv.
+Associate these labels with the corresponding images from train_label_coordinates.csv.
+Prepare the final dataset where each image has associated labels ready for training.
+Step 1: Load the CSV Files
+First, import the necessary libraries and load the CSV files into Pandas DataFrames.
+python
+Copy code
+import pandas as pd
+
+# Load the CSV files
+train_df = pd.read_csv('train.csv')
+label_coords_df = pd.read_csv('train_label_coordinates.csv')
+Step 2: Preprocess train.csv to Extract Labels
+Understanding train.csv:
+Each row corresponds to a study_id.
+Columns represent different condition-level combinations (e.g., spinal_canal_stenosis_l1_l2).
+The values are the severity levels: 'Normal/Mild', 'Moderate', or 'Severe'.
+Some entries may have missing labels (NaNs).
+Transforming train.csv into a Long Format:
+We need to reshape train.csv from wide to long format to have one row per condition-level per study.
+python
+Copy code
+# Melt the DataFrame to long format
+train_labels_long = train_df.melt(
+    id_vars=['study_id'],
+    var_name='condition_level',
+    value_name='severity'
+)
+Splitting condition_level into Condition and Level:
+We need to extract the condition and the spinal level from the condition_level column.
+python
+Copy code
+# Split 'condition_level' into 'condition' and 'level'
+condition_level_split = train_labels_long['condition_level'].str.rsplit('_', n=2, expand=True)
+
+# Handle the side (left/right) if present
+train_labels_long['condition'] = condition_level_split[0]
+train_labels_long['side'] = condition_level_split[1]
+train_labels_long['level'] = condition_level_split[2]
+
+# For conditions without 'left' or 'right', adjust accordingly
+conditions_without_side = ['spinal', 'spinal_canal', 'spinal_canal_stenosis']
+train_labels_long.loc[train_labels_long['condition'].isin(conditions_without_side), 'condition'] = (
+    condition_level_split[0] + '_' + condition_level_split[1]
+)
+train_labels_long.loc[train_labels_long['condition'].isin(conditions_without_side), 'level'] = condition_level_split[2]
+train_labels_long.loc[train_labels_long['condition'].isin(conditions_without_side), 'side'] = ''
+
+# Combine 'condition' and 'side' where applicable
+train_labels_long['condition'] = train_labels_long['condition'] + '_' + train_labels_long['side']
+train_labels_long['condition'] = train_labels_long['condition'].str.rstrip('_')
+Clean Up the DataFrame:
+python
+Copy code
+# Keep only necessary columns
+train_labels_long = train_labels_long[['study_id', 'condition', 'level', 'severity']]
+
+# Replace missing severities with NaN
+train_labels_long['severity'].replace('nan', pd.NA, inplace=True)
+Example Result:
+css
+Copy code
+   study_id                  condition  level       severity
+0   4003253     spinal_canal_stenosis   l1_l2  Normal/Mild
+1   4003253     spinal_canal_stenosis   l2_l3  Normal/Mild
+...
+Step 3: Preprocess train_label_coordinates.csv
+Understanding train_label_coordinates.csv:
+Each row corresponds to a labeled finding within a specific image.
+Contains study_id, series_id, instance_number, condition, level, and coordinates (x, y).
+Clean and Standardize the condition and level Columns:
+Ensure that the condition and level columns in both DataFrames match.
+python
+Copy code
+# Standardize condition names to lowercase and replace spaces with underscores
+label_coords_df['condition'] = label_coords_df['condition'].str.lower().str.replace(' ', '_')
+label_coords_df['level'] = label_coords_df['level'].str.lower().str.replace('/', '_')
+Example Result:
+python
+Copy code
+    study_id    series_id    instance_number   condition                level       x           y
+0   4003253     702807833   8                spinal_canal_stenosis    l1_l2   322.831858 227.964602
+...
+Step 4: Merge Labels with Image Coordinates
+Our goal is to assign the severity labels from train_labels_long to the corresponding images specified in label_coords_df.
+Merge the DataFrames on study_id, condition, and level:
+python
+Copy code
+# Merge the DataFrames
+merged_df = pd.merge(
+    label_coords_df,
+    train_labels_long,
+    on=['study_id', 'condition', 'level'],
+    how='left'  # Use 'left' to keep all rows from label_coords_df
+)
+Check for Missing Severities:
+After merging, check if there are any missing severity labels.
+python
+Copy code
+# Identify rows with missing severity after the merge
+missing_severity = merged_df['severity'].isnull()
+if missing_severity.any():
+    print("Some labels are missing severity information.")
+Step 5: Handle Missing Labels
+Depending on your strategy, you can:
+Option 1: Exclude Images with Missing Labels
+python
+Copy code
+merged_df = merged_df.dropna(subset=['severity'])
+Option 2: Keep Images and Handle Missing Labels During Training
+You can assign a special value (e.g., -1) to missing labels and handle them in your loss function.
+python
+Copy code
+merged_df['severity'] = merged_df['severity'].fillna(-1)
+For this example, we'll proceed with excluding images with missing labels.
+Step 6: Encode Severity Labels
+Map the textual severity levels to numerical values.
+python
+Copy code
+# Map severity levels to integers
+severity_mapping = {'Normal/Mild': 0, 'Moderate': 1, 'Severe': 2}
+merged_df['severity_encoded'] = merged_df['severity'].map(severity_mapping)
+
+# If there are any remaining missing labels, set them to -1
+merged_df['severity_encoded'] = merged_df['severity_encoded'].fillna(-1)
+Step 7: Prepare the Image Paths
+Construct the full image paths for loading.
+python
+Copy code
+import os
+
+def construct_image_path(row):
+    study_id = row['study_id']
+    series_id = row['series_id']
+    instance_number = row['instance_number']
+    return os.path.join('train_images', str(study_id), str(series_id), f"{instance_number}.dcm")
+
+merged_df['image_path'] = merged_df.apply(construct_image_path, axis=1)
+Check if Image Files Exist:
+python
+Copy code
+# Verify that the image files exist
+merged_df = merged_df[merged_df['image_path'].apply(os.path.exists)]
+Step 8: Prepare the Final Dataset for Training
+Select Relevant Columns:
+python
+Copy code
+final_df = merged_df[['image_path', 'condition', 'level', 'severity_encoded']]
+Optionally, Combine condition and level into a Single Label:
+python
+Copy code
+# Create a combined label
+final_df['label'] = final_df['condition'] + '_' + final_df['level']
+Example of the Final DataFrame:
+python
+Copy code
+    image_path                                         label                                severity_encoded
+0   train_images/4003253/702807833/8.dcm    spinal_canal_stenosis_l1_l2       0
+1   train_images/4003253/702807833/8.dcm    spinal_canal_stenosis_l2_l3       0
+...
+Step 9: Convert Labels to Suitable Format for Training
+Depending on your modeling approach, you might:
+Option A: Treat as Multi-Class Classification
+If you decide to classify each condition-level separately, you can proceed by:
+Creating a Multi-Class Label Encoder:
+python
+Copy code
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.utils import to_categorical
+
+# Encode the 'severity_encoded' as categories (0, 1, 2)
+y = final_df['severity_encoded'].values.astype(int)
+y = to_categorical(y, num_classes=3)
+Option B: Treat as Multi-Label Classification
+If you want to consider all labels for an image at once, you can pivot the DataFrame.
+python
+Copy code
+# Create a pivot table with image paths as index and labels as columns
+pivot_df = final_df.pivot_table(
+    index='image_path',
+    columns='label',
+    values='severity_encoded',
+    aggfunc='first'  # Since each image-label pair is unique
+)
+
+# Fill missing labels with -1 or any other sentinel value
+pivot_df = pivot_df.fillna(-1)
+Converting the Pivot Table to Arrays:
+python
+Copy code
+# Convert pivot_df to a NumPy array
+labels_array = pivot_df.values  # Shape: (num_images, num_labels)
+
+# Get the list of image paths
+image_paths = pivot_df.index.tolist()
+Handle Missing Labels in the Array:
+Option 1: Mask Missing Labels During Training
+You can handle missing labels by masking them during loss calculation (explained later).
+Option 2: Exclude Images with Missing Labels
+python
+Copy code
+# Exclude images with any missing labels
+valid_indices = ~np.any(labels_array == -1, axis=1)
+labels_array = labels_array[valid_indices]
+image_paths = [image_paths[i] for i in range(len(image_paths)) if valid_indices[i]]
+Step 10: Load Images and Prepare for Training
+Load Images Using pydicom:
+python
+Copy code
+import numpy as np
+import pydicom
+from tensorflow.keras.preprocessing.image import img_to_array
+
+def load_and_preprocess_image(image_path):
+    dicom = pydicom.dcmread(image_path)
+    image = dicom.pixel_array.astype(np.float32)
+    # Normalize the image
+    image = (image - np.min(image)) / (np.max(image) - np.min(image))
+    # Convert to RGB by stacking the grayscale image
+    image = np.stack((image,)*3, axis=-1)
+    # Resize the image to match the input size of the model (e.g., 224x224)
+    image = tf.image.resize(image, [224, 224]).numpy()
+    return image
+
+# Load all images
+images = [load_and_preprocess_image(path) for path in image_paths]
+images_array = np.array(images)
+Step 11: Split Data into Training and Validation Sets
+python
+Copy code
+from sklearn.model_selection import train_test_split
+
+X_train, X_val, y_train, y_val = train_test_split(
+    images_array,
+    labels_array,
+    test_size=0.2,
+    random_state=42
+)
+Step 12: Build and Compile Your Model
+For Multi-Label Classification:
+python
+Copy code
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Dense, Flatten, Dropout
+from tensorflow.keras.models import Model
+from tensorflow.keras.applications.vgg16 import VGG16
+
+num_labels = labels_array.shape[1]  # Number of labels
+
+# Build the model
+input_layer = Input(shape=(224, 224, 3))
+base_model = VGG16(weights='imagenet', include_top=False, input_tensor=input_layer)
+x = base_model.output
+x = Flatten()(x)
+x = Dense(512, activation='relu')(x)
+x = Dropout(0.5)(x)
+output_layer = Dense(num_labels, activation='sigmoid')(x)  # Use 'sigmoid' for multi-label
+
+model = Model(inputs=input_layer, outputs=output_layer)
+Compile the Model with a Custom Loss Function to Handle Missing Labels:
+python
+Copy code
+def masked_loss(y_true, y_pred):
+    # Mask for labels not equal to -1
+    mask = tf.not_equal(y_true, -1)
+    # Apply binary crossentropy only on valid labels
+    loss = tf.keras.losses.binary_crossentropy(y_true * tf.cast(mask, tf.float32), y_pred * tf.cast(mask, tf.float32))
+    # Compute mean loss
+    return tf.reduce_mean(loss)
+
+model.compile(optimizer='adam', loss=masked_loss, metrics=['accuracy'])
+Step 13: Train the Model
+python
+Copy code
+history = model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    epochs=10,
+    batch_size=32
+)
+Alternative Approach: Handling Each Condition-Level Separately
+If you prefer to train separate models or outputs for each condition-level, you can adjust your model accordingly.
+Creating Multiple Outputs:
+python
+Copy code
+outputs = []
+for i in range(num_labels):
+    outputs.append(Dense(1, activation='sigmoid', name=f'output_{i}')(x))
+
+model = Model(inputs=input_layer, outputs=outputs)
+Compile the Model with Multiple Losses:
+python
+Copy code
+losses = {f'output_{i}': masked_loss for i in range(num_labels)}
+model.compile(optimizer='adam', loss=losses)
+Prepare Labels as a Dictionary:
+python
+Copy code
+# Convert labels_array to a dictionary
+y_train_dict = {f'output_{i}': y_train[:, i] for i in range(num_labels)}
+y_val_dict = {f'output_{i}': y_val[:, i] for i in range(num_labels)}
+Train the Model:
+python
+Copy code
+history = model.fit(
+    X_train, y_train_dict,
+    validation_data=(X_val, y_val_dict),
+    epochs=10,
+    batch_size=32
+)
+Summary
+Use train.csv to get the severity labels for each condition and spinal level per study.
+Use train_label_coordinates.csv to find out which images (specified by series_id and instance_number) correspond to each condition and level.
+Merge the two datasets on study_id, condition, and level to associate severity labels with specific images.
+Handle missing labels appropriately, either by excluding them or by using masking during training.
+Encode the severity labels into numerical values suitable for training your model.
+Load the images using the constructed paths and preprocess them for input into your model.
+Prepare the data for training, splitting into training and validation sets.
+Build and compile your model, ensuring that it can handle multi-label classification and missing labels.
+Train the model and evaluate its performance.
