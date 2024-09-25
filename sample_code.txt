@@ -322,3 +322,376 @@ Load the images using the constructed paths and preprocess them for input into y
 Prepare the data for training, splitting into training and validation sets.
 Build and compile your model, ensuring that it can handle multi-label classification and missing labels.
 Train the model and evaluate its performance.
+
+
+
+
+Check if the dataset is imbalanced. To count the number of samples for each severity level in your dataset using Python, you can use the value_counts() method provided by Pandas. Here's how you can do it:
+python
+Copy code
+import pandas as pd
+
+# Assuming 'final_df' is your DataFrame and 'severity' is the column with severity labels
+severity_counts = final_df['severity'].value_counts()
+
+# Display the counts
+print(severity_counts)
+Explanation:
+final_df['severity']: Accesses the severity column in your DataFrame.
+.value_counts(): Counts the number of occurrences of each unique value in the severity column.
+print(severity_counts): Outputs the count of each severity level.
+Example Output:
+yaml
+Copy code
+Normal/Mild    2000
+Moderate        800
+Severe          200
+Name: severity, dtype: int64
+This output tells you how many samples there are for each severity category in your dataset.
+Additional Tips:
+Sorting the Counts:
+If you want to sort the counts in ascending order, you can pass the sort parameter:
+python
+Copy code
+severity_counts = final_df['severity'].value_counts(sort=True)
+Accessing Counts Individually:
+To access the count of a specific severity level:
+python
+Copy code
+normal_mild_count = severity_counts.get('Normal/Mild', 0)
+moderate_count = severity_counts.get('Moderate', 0)
+severe_count = severity_counts.get('Severe', 0)
+
+print(f"Normal/Mild: {normal_mild_count}")
+print(f"Moderate: {moderate_count}")
+print(f"Severe: {severe_count}")
+Visualizing the Distribution:
+You can also visualize the distribution using a bar chart:
+python
+Copy code
+import matplotlib.pyplot as plt
+
+severity_counts.plot(kind='bar')
+plt.title('Number of Samples per Severity Level')
+plt.xlabel('Severity')
+plt.ylabel('Count')
+plt.show()
+Using GroupBy for More Complex Counts:
+If your dataset has multiple conditions or levels and you want to see counts per severity per condition or level, you can use groupby:
+python
+Copy code
+# Count samples per severity and condition
+severity_condition_counts = final_df.groupby(['condition', 'severity']).size().reset_index(name='counts')
+print(severity_condition_counts)
+Example Output:
+css
+Copy code
+                 condition      severity  counts
+0  left_neural_foraminal_narrowing  Moderate     150
+1  left_neural_foraminal_narrowing  Normal/Mild  500
+2  left_neural_foraminal_narrowing  Severe        50
+3  spinal_canal_stenosis            Moderate     200
+4  spinal_canal_stenosis            Normal/Mild 1000
+5  spinal_canal_stenosis            Severe       100
+This provides a breakdown of counts per severity level within each condition.
+
+
+
+Here's a step-by-step guide:
+Import Necessary Libraries
+Load and Preprocess Images
+Prepare Labels
+Split Data into Training and Validation Sets
+Build the Model
+Train the Model
+Evaluate the Model
+Step 1: Import Necessary Libraries
+python
+Copy code
+import os
+import numpy as np
+import pandas as pd
+import pydicom
+import tensorflow as tf
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.applications.vgg16 import VGG16
+from tensorflow.keras.layers import Input, Dense, Flatten, Dropout
+from tensorflow.keras.models import Model
+from tensorflow.keras.utils import to_categorical
+Step 2: Load and Preprocess Images
+2.1. Load the DataFrame
+Assuming you have your final dataset in a DataFrame called final_df:
+python
+Copy code
+# Load your DataFrame
+final_df = pd.read_csv('your_final_dataset.csv')  # Replace with your actual file or DataFrame
+2.2. Define a Function to Load and Preprocess Images
+python
+Copy code
+def load_and_preprocess_dicom(row):
+    dicom_path = os.path.join(
+        'train_images',
+        str(row['study_id']),
+        str(row['series_id']),
+        f"{row['instance_number']}.dcm"
+    )
+    # Read the DICOM file
+    dicom = pydicom.dcmread(dicom_path)
+    image = dicom.pixel_array.astype(np.float32)
+    
+    # Normalize the image (0 to 1)
+    image = (image - np.min(image)) / (np.max(image) - np.min(image))
+    
+    # Resize the image to 224x224 (VGG16 input size)
+    image = tf.image.resize(image, [224, 224]).numpy()
+    
+    # Convert grayscale image to RGB by stacking the grayscale image three times
+    image = np.stack((image,)*3, axis=-1)
+    
+    return image
+2.3. Load All Images
+python
+Copy code
+# Initialize lists to store images and labels
+images = []
+labels = []
+
+# Iterate over the DataFrame and load images
+for idx, row in final_df.iterrows():
+    try:
+        image = load_and_preprocess_dicom(row)
+        images.append(image)
+        labels.append(row['severity'])
+    except Exception as e:
+        print(f"Error loading image for row {idx}: {e}")
+        continue
+
+# Convert lists to NumPy arrays
+images = np.array(images)
+Step 3: Prepare Labels
+3.1. Encode Labels
+python
+Copy code
+# Encode severity labels to integers
+severity_mapping = {'Normal/Mild': 0, 'Moderate': 1, 'Severe': 2}
+labels_encoded = [severity_mapping[label] for label in labels]
+labels_encoded = np.array(labels_encoded)
+3.2. Convert Labels to Categorical (One-Hot Encoding)
+python
+Copy code
+labels_categorical = to_categorical(labels_encoded, num_classes=3)
+Step 4: Split Data into Training and Validation Sets
+python
+Copy code
+X_train, X_val, y_train, y_val = train_test_split(
+    images,
+    labels_categorical,
+    test_size=0.2,
+    random_state=42,
+    stratify=labels_encoded  # Stratify to maintain label distribution
+)
+Step 5: Build the Model
+5.1. Load Pre-trained VGG16 Model
+python
+Copy code
+# Load VGG16 model without the top layers
+base_model = VGG16(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+5.2. Freeze Base Model Layers
+python
+Copy code
+for layer in base_model.layers:
+    layer.trainable = False
+5.3. Add Custom Layers
+python
+Copy code
+x = base_model.output
+x = Flatten()(x)
+x = Dense(512, activation='relu')(x)
+x = Dropout(0.5)(x)
+predictions = Dense(3, activation='softmax')(x)  # 3 classes for severity levels
+5.4. Create the Model
+python
+Copy code
+model = Model(inputs=base_model.input, outputs=predictions)
+5.5. Compile the Model
+python
+Copy code
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+Step 6: Train the Model
+python
+Copy code
+epochs = 10
+batch_size = 32
+
+history = model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    epochs=epochs,
+    batch_size=batch_size,
+    shuffle=True
+)
+Step 7: Evaluate the Model
+python
+Copy code
+# Evaluate on the validation set
+val_loss, val_accuracy = model.evaluate(X_val, y_val)
+print(f"Validation Accuracy: {val_accuracy}")
+Additional Considerations
+Handling Class Imbalance
+If your dataset has class imbalance, you can compute class weights and pass them to model.fit().
+python
+Copy code
+from sklearn.utils import class_weight
+
+# Compute class weights
+class_weights = class_weight.compute_class_weight(
+    class_weight='balanced',
+    classes=np.unique(labels_encoded),
+    y=labels_encoded
+)
+
+class_weights_dict = dict(enumerate(class_weights))
+
+# Pass class_weights to model.fit()
+history = model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    epochs=epochs,
+    batch_size=batch_size,
+    shuffle=True,
+    class_weight=class_weights_dict
+)
+Fine-Tuning the Base Model
+After initial training, you can unfreeze some layers of the base model to fine-tune it.
+Unfreeze Layers
+python
+Copy code
+# Unfreeze the last few layers
+for layer in base_model.layers[-4:]:
+    layer.trainable = True
+Recompile the Model with a Lower Learning Rate
+python
+Copy code
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+Retrain the Model
+python
+Copy code
+history_fine = model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    epochs=5,
+    batch_size=batch_size,
+    shuffle=True,
+    class_weight=class_weights_dict
+)
+Data Augmentation
+Since we're not using ImageDataGenerator, you can perform data augmentation manually.
+Define Augmentation Function
+python
+Copy code
+import tensorflow as tf
+
+def augment_image(image):
+    image = tf.image.random_flip_left_right(image)
+    image = tf.image.random_brightness(image, max_delta=0.1)
+    image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+    image = tf.image.rot90(image, k=np.random.randint(4))  # Rotate 0, 90, 180, or 270 degrees
+    return image
+Apply Augmentation to Training Images
+python
+Copy code
+augmented_images = []
+augmented_labels = []
+
+for i in range(len(X_train)):
+    augmented_images.append(X_train[i])
+    augmented_labels.append(y_train[i])
+    
+    # Augment the image
+    augmented_img = augment_image(X_train[i])
+    augmented_images.append(augmented_img.numpy())
+    augmented_labels.append(y_train[i])
+
+# Convert lists to arrays
+X_train_augmented = np.array(augmented_images)
+y_train_augmented = np.array(augmented_labels)
+Retrain the Model with Augmented Data
+python
+Copy code
+history = model.fit(
+    X_train_augmented, y_train_augmented,
+    validation_data=(X_val, y_val),
+    epochs=epochs,
+    batch_size=batch_size,
+    shuffle=True,
+    class_weight=class_weights_dict
+)
+Potential Issues and Solutions
+Memory Constraints
+Loading all images into memory may cause memory issues, especially with large datasets.
+Solution:
+Use a custom data generator (tf.keras.utils.Sequence) that loads images in batches during training.
+Example:
+python
+Copy code
+from tensorflow.keras.utils import Sequence
+
+class DataGenerator(Sequence):
+    def __init__(self, dataframe, batch_size=32, shuffle=True):
+        self.dataframe = dataframe
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.indexes = np.arange(len(self.dataframe))
+        self.on_epoch_end()
+    
+    def __len__(self):
+        return int(np.ceil(len(self.dataframe) / self.batch_size))
+    
+    def __getitem__(self, index):
+        batch_indexes = self.indexes[index*self.batch_size:(index+1)*self.batch_size]
+        batch_df = self.dataframe.iloc[batch_indexes]
+        
+        images = []
+        labels = []
+        
+        for idx, row in batch_df.iterrows():
+            image = load_and_preprocess_dicom(row)
+            images.append(image)
+            label = severity_mapping[row['severity']]
+            labels.append(label)
+        
+        images = np.array(images)
+        labels = to_categorical(labels, num_classes=3)
+        return images, labels
+    
+    def on_epoch_end(self):
+        if self.shuffle:
+            np.random.shuffle(self.indexes)
+Use the Data Generator
+python
+Copy code
+# Create training and validation DataFrames
+train_df, val_df = train_test_split(final_df, test_size=0.2, random_state=42, stratify=final_df['severity'])
+
+# Create Data Generators
+train_generator = DataGenerator(train_df, batch_size=batch_size, shuffle=True)
+val_generator = DataGenerator(val_df, batch_size=batch_size, shuffle=False)
+
+# Train the model
+history = model.fit(
+    train_generator,
+    validation_data=val_generator,
+    epochs=epochs,
+    class_weight=class_weights_dict
+)
+Conclusion
+By following this approach, you can fine-tune a VGG16 model using your DICOM images without the need to convert them to PNG or use ImageDataGenerator. This method involves:
+Loading DICOM images directly using pydicom.
+Preprocessing the images to match the input requirements of VGG16.
+Preparing the labels for training.
+Training the model using standard TensorFlow/Keras functions.
+Let Me Know If You Need Further Assistance
+Feel free to ask if you have any questions or need help with specific parts of the code. I'm here to help you through the process!
